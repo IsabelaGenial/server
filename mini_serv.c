@@ -63,7 +63,7 @@ void fatal_error() {
     exit(1);
 }
 
-// Adiciona uma mensagem à fila de escrita de todos os clientes, exceto o remetente (ou -1 se for do servidor).
+
 void broadcast_message(int sender_fd, const char *message) {
     for (int fd = 0; fd <= g_max_fd; ++fd) {
         if (g_clients[fd] && fd != sender_fd) { // Cliente existe e não é o remetente
@@ -85,11 +85,11 @@ void broadcast_message(int sender_fd, const char *message) {
 void remove_client(int fd_to_remove) {
     if (fd_to_remove < 0 || fd_to_remove >= FD_SETSIZE || !g_clients[fd_to_remove]) return;
 
-    // Notificar outros clientes sobre a saída
+   
     sprintf(g_msg_buffer, "server: client %d just left\n", g_clients[fd_to_remove]->id);
     broadcast_message(fd_to_remove, g_msg_buffer); // Envia para todos MENOS o que está saindo
 
-    // Limpar recursos do cliente
+    
     if (g_clients[fd_to_remove]->write_buf) {
         free(g_clients[fd_to_remove]->write_buf);
     }
@@ -98,9 +98,7 @@ void remove_client(int fd_to_remove) {
 
     close(fd_to_remove);
     FD_CLR(fd_to_remove, &g_active_fds);
-    // FD_CLR(fd_to_remove, &g_write_fds); // select() cuida de não setar mais este fd
 
-    // Recalcular g_max_fd se o FD removido era o maior
     if (fd_to_remove == g_max_fd) {
         g_max_fd = g_server_fd; // Começa pelo server_fd
         for (int i = g_server_fd + 1; i < fd_to_remove; ++i) {
@@ -151,12 +149,8 @@ void handle_client_read(int fd) {
 
     // Tenta ler o máximo possível no espaço restante do buffer
     int space_in_buf = sizeof(client->read_buf) - 1 - client->read_len;
-    if (space_in_buf <= 0) { // Buffer de leitura cheio, e nenhuma linha foi processada
-                              // Isso pode levar a um problema se o cliente só envia sem \n
-                              // e enche o buffer. O enunciado não especifica como tratar.
-                              // Vamos assumir que as linhas não são maiores que o buffer.
-                              // Uma opção seria desconectar, mas não é pedido.
-        return; // Não podemos ler mais até processar o que temos.
+    if (space_in_buf <= 0) {
+        return;
     }
 
     bytes_received = recv(fd, client->read_buf + client->read_len, space_in_buf, 0);
@@ -212,20 +206,18 @@ void handle_client_write(int fd) {
         return;
     }
     
-    // send pode retornar 0 se o peer fechou a conexão para escrita.
-    // Ou se to_send_len era 0, mas já verificamos isso.
+
     if (bytes_sent == 0 && to_send_len > 0) { 
         remove_client(fd);
         return;
     }
 
 
-    if (bytes_sent < to_send_len) { // Envio parcial
-        // Move o restante não enviado para o início do buffer
+    if (bytes_sent < to_send_len) { 
         memmove(client->write_buf, client->write_buf + bytes_sent, to_send_len - bytes_sent + 1); // +1 para o '\0'
-    } else { // Tudo foi enviado
+    } else { 
         free(client->write_buf);
-        client->write_buf = NULL; // Marca como vazio
+        client->write_buf = NULL; 
     }
 }
 
@@ -268,7 +260,7 @@ int main(int argc, char **argv) {
 
     while (1) {
         g_read_fds = g_active_fds;
-        FD_ZERO(&g_write_fds); // Sempre zerar antes de popular
+        FD_ZERO(&g_write_fds); 
 
         // Adiciona FDs de clientes com dados na fila de escrita ao g_write_fds
         for (int fd = 0; fd <= g_max_fd; ++fd) {

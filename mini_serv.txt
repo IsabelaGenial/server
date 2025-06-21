@@ -1,0 +1,69 @@
+
+--Estrutura de dados Cliente--
+
+TIPO ESTRUTURA Cliente:
+    INTEIRO ID;
+    PNTEIRO PARA TEXTO buffer_de_envio;
+    VETOR DE CARACTERES buffer_de_leitura [40961]; - TAMANHO FIXO
+    INTEIRO tamanho_dados_leitura;
+FIM ESTRUTURA
+
+--GLOBAIS--
+
+VETOR DE PONTEIRO Cliente clientes_conectados [FD_SETSIZE]
+VETOR DE CARACTERES buffer_global_mensagens [42000]
+
+INTEIRO descritor_servidor = -1
+INTEIRO proximo_id_cliente = 0
+
+fd_set (
+    conjunto_descritores_ativos,
+    conjunto_descritores_para_ler,
+    conjunto_descritores_para_escrever
+)
+
+INTEIRO maior_descritor_ativo = 0
+
+FUNÇÃO erro_fatal:
+    ESCREVER "fatal error\n" NA SAIDA DE ERRO (2);
+    SE descritor_servidor FOI ABERTO  ENTÃO
+        FECHAR descritor_servidor
+    FIM SE
+    PARA CADA descritor i DE 0 ATÉ maior_descritor_ativo FAÇA
+        SE clientes_conectados[i] EXISTE ENTÃO
+            SE clientes_conectados[i].buffer_de_envio EXISTE ENTÃO
+                LIBERAR MEMORIA DE clientes_conectados[i].buffer_de_envio
+            FIM SE
+            LIBERAR MEMORIA DE clientes_conectados [i]
+            clientes_conectados[i] = nulo
+            SE i MAIOR 0 E i DIFERENTE DE descritor_servidor ENTÃO
+                FECHAR descritor[i]
+            FIM SE
+        FIM SE
+    FIM DO PARA 
+    TERMINA PROGRAMA COM O CODIGO 1
+FIM FUNÇÃO
+
+FUNÇÃO transmitir_mensagem(descritor_remetente, mensagem_a_transmitir):
+    PARA CADA descritor 'fd_atual' DE 0 ATE maior_descritor_ativo FAÇA
+        SE clientes_conectados[fd_atual] EXISTE E fd_atual DIFERENTE DE descritor_remetente ENTÃO
+            SE clientes_conectados[fd_atual].buffer_de_envio NÃO EXISTE ENTÃO
+                clientes_conectados[fd_atual].buffer_de_envio = DUPLICAR_STRING(mensagem_a_transmitir)
+                SE clientes_conectados[fd_atual].buffer_de_envio FALHOU ENTÃO
+                    CHAMAR erro_fatal()
+                FIM SE
+            SENÃO
+                novo_buffer_de_envio = ALOCAR MEMORIA(TAMANHO_ANTIGO + TAMANHO_MENSAGEM + 1)
+                SE novo_buffer_de_envio FALHOU
+                    CHAMAR erro_fatal()
+                FIM SE
+                COPIAR clientes_conectados[fd_atual].buffer_de_envio PARA novo_buffer_de_envio
+                CONCATENAR mensagem_a_transmitir EM novo_buffer_de_envio
+                LIBERA MEMORIA DE clientes_conectados[fd_atual].buffer_de_envio
+                clientes_conectados[fd_atual].buffer_de_envio = novo_buffer_de_envio
+            FIM SE 
+        FIM SE
+    FIM PARA
+FIM FUNÇÃO
+
+
