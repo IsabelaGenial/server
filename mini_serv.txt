@@ -67,3 +67,123 @@ FUNÇÃO transmitir_mensagem(descritor_remetente, mensagem_a_transmitir):
 FIM FUNÇÃO
 
 
+FUNÇÃO remover_cliente(descritor_a_remover):
+    SE descritor_a_remover É INVALIDO OU clientes_conectados[descritor_a_remover] NÃO EXISTE ENTÃO
+        RETORNAR
+    FIM SE
+
+    FORMATAR mensagem_saida EM buffer_global_mensagens: "server:client [ID_CLIENTE] just left\n"
+    CHAMAR transmitir_mensagem(descritor_a_remover, buffer_global_mensagens)
+
+    SE clientes_conectados[descritor_a_remover].buffer_de_envio EXISTE ENTÃO 
+        LIBERAR MEMORIA DE clientes_conectados[descritor_a_remover].novo_buffer_de_envio
+    FIM SE
+    LIBERAR MEMORIA clientes_conectados[descritor_a_remover]
+    clientes_conectados[descritor_a_remover] = nulo
+
+    FECHAR descritor_a_remover
+    REMOVER descritor_a_remover DE conjunto_descritores_ativos
+
+    SE descritor_a_remover == maior_descritor_ativo ENTÃO
+        maior_descritor_ativo = descritor_servidor
+        PARA CADA descritor i DE 0 ATE descritor_a_remover - 1 FAÇA
+            SE i ESTA EM conjunto_descritores_ativos E i > maior_descritor_ativo ENTÃO
+                maior_descritor_ativo = i
+            FIM SE 
+        FIM PARA 
+    FIM SE
+FIM FUNÇAO
+
+
+FUNÇAO adicionar_novo_cliente:
+    descritor_novo_cliente = ACEITAR_CONEXÃO_EM(descritor_servidor)
+    SE descritor_novo_cliente < 0 ENTÃO
+        RETORNAR
+    FIM SE
+
+    SE descritor_novo_cliente >= MAXIMO_DESCRITORES ENTÃO
+        ESCREVER "Servidor: Muitos clientes, Conexão rejeitada\n" NA SAIDA PADRAO
+        FECHAR descritor_novo_cliente
+        RETORNAR
+    FIM SE
+
+    clientes_conectados[descritor_novo_cliente].id = proximo_id_cliente
+    proximo_id_cliente = proximo_id_cliente + 1
+    clientes_conectados[descritor_novo_cliente].buffer_de_envio = nulo
+    clientes_conectados[descritor_novo_cliente].tamanho_dados_leitura = 0
+    clientes_conectados[descritor_novo_cliente].buffer_de_leitura[0] = nulo
+
+    ADICIONAR descritor_novo_cliente EM buffer_global_mensagens:
+    "server:client [ID_NOVO_CLIENTE] just arrived\n"
+    CHAMAR transmitir_mensagem(descritor_novo_cliente, buffer_global_mensagens)
+FIM FUNÇAO
+
+FUNÇAO processar_leitura_do_cliente(descritor_cliente):
+    cliente_atual = clientes_conectados[descritor_cliente]
+
+    espaco_disponivel_leitura = TAMANHO_FIXO_LEITURA - 1 -  cliente_atual.tamanho_dados_leitura
+    SE espaco_disponivel_leitura <= 0 ENTÃO
+        RETORNAR
+    FIM SE
+
+    bytes_lidos = RECEBER_DADOS_DE(descritor_cliente, NO_FINAL_DE cliente_atual.buffer_de_leitura, espaco_disponivel_leitura)
+    SE bytes_lidos <= 0 ENTÃO
+        CHAMAR remover_cliente(descritor_cliente)
+        RETORNAR
+    FIM SE
+
+    cliente_atual.tamanho_dados_leitura = cliente_atual.tamanho_dados_leitura + bytes_lidos
+    cliente_atual.buffer_de_leitura[cliente_atual.tamanho_dados_leitura] = nulo
+
+    inicio_linha_atual = cliente_atual.buffer_de_leitura
+    ENQUANTO (ponteiro_nova_linha = ENCONTRAR_PRIMEIRO('\n', EM inicio_linha_atual) != nulo) FAÇA
+        mensagem_nova = nulo
+        CONCATENAR ponteiro_nova_linha EM mensagem_nova
+        inicio_linha_atual = ponteiro_nova_linha + 1
+    FIM ENQUANTO
+
+    FORMATAR mensagem_cliente EM buffer_global_mensagens: "client [descritor_cliente] : [mensagem_nova]\n"
+    CHAMAR transmitir_mensagem(descritor_cliente, buffer_global_mensagens)
+
+    SE inicio_linha_atual != cliente_atual.buffer_de_leitura E *inicio_linha_atual != NULO ENTÃO
+        tamanho_restante = TAMANHO_STRING(inicio_linha_atual)
+        MOVER_MEMORIA(destino=cliente_atual.buffer_de_leitura, oringem=inicio_linha_atual, tamanho = tamanho_restante)
+        cliente_atual.tamanho_dados_leitura = tamanho_restante
+        cliente_atual.buffer_de_leitura[cliente_atual.tamanho_dados_leitura] = nulo
+    SENÃO SE *inicio_linha_atual == NULO E inicio_linha_atual > cliente_atual.buffer_de_leitura ENTÃO
+        cliente_atual.tamanho_dados_leitura = 0
+        cliente_atual.buffer_de_leitura[0] = NULO
+    FIM SE
+FIM FUNÇAO
+
+FUNÇAO processar_escrita_do_cliente(descritor_cliente):
+    cliente_atual = clientes_conectados[descritor_cliente]
+
+    SE cliente_atual NÃO EXISTE OU cliente_atual.buffer_de_envio NÃO EXISTE
+        RETORNAR
+    FIM SE
+
+    tamanho_a_enviar = TAMANHO_STRING(cliente_atual.buffer_de_envio)
+    bytes_enviados = ENVIAR_DADOS_PARA(descritor_cliente, cliente_atual.buffer_de_envio, tamanho_a_enviar)
+
+    SE bytes_enviados < 0 ENTÃO
+        CHAMAR remover_cliente(descritor_cliente)
+        RETORNAR
+    FIM SE
+
+    SE bytes_enviados == 0 E tamanho_a_enviar > 0 ENTÃO
+        CHAMAR remover_cliente(descritor_cliente)
+        RETORNAR
+    FIM SE
+
+    SE bytes_enviados < tamanho_a_enviar ENTÃO
+        MOVER_MEMORIA(destino=cliente_atual.buffer_de_envio.
+                        oringem= cliente_atual.buffer_de_envio + bytes_enviados
+                        tamanho= tamanho_a_enviar - bytes_enviados + 1)
+    SENÃO
+        LIBERAR MEMORIA DE cliente_atual.buffer_de_envio
+        cliente_atual.buffer_de_envio = nulo
+    FRIM SE 
+FIM FUNÇÃO
+
+FUNÇAO principal(INTEIRO numero_argumento, VETOR DE TEXTO ponteiro_argumento):
