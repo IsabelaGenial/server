@@ -136,14 +136,15 @@ FUNÇAO processar_leitura_do_cliente(descritor_cliente):
     cliente_atual.buffer_de_leitura[cliente_atual.tamanho_dados_leitura] = nulo
 
     inicio_linha_atual = cliente_atual.buffer_de_leitura
-    ENQUANTO (ponteiro_nova_linha = ENCONTRAR_PRIMEIRO('\n', EM inicio_linha_atual) != nulo) FAÇA
-        mensagem_nova = nulo
-        CONCATENAR ponteiro_nova_linha EM mensagem_nova
-        inicio_linha_atual = ponteiro_nova_linha + 1
-    FIM ENQUANTO
+    ENQUANTO (ponteiro_nova_linha = ENCONTRAR_PRIMEIRO('\n', EM inicio_linha_atual)) != NULO FAÇA
+        *ponteiro_nova_linha = CARACTERE_NULO // Isola a linha atual, substituindo '\n' por nulo
+        
+        // A linha atual é o que está em 'inicio_linha_atual' agora.
+        FORMATAR mensagem_cliente EM buffer_global_mensagens: "client [ID_DO_CLIENTE_EM_cliente_atual] : [inicio_linha_atual]\n"
+        CHAMAR transmitir_mensagem(descritor_cliente, buffer_global_mensagens)
 
-    FORMATAR mensagem_cliente EM buffer_global_mensagens: "client [descritor_cliente] : [mensagem_nova]\n"
-    CHAMAR transmitir_mensagem(descritor_cliente, buffer_global_mensagens)
+        inicio_linha_atual = ponteiro_nova_linha + 1 // Avança para o início da próxima linha potencial
+    FIM ENQUANTO
 
     SE inicio_linha_atual != cliente_atual.buffer_de_leitura E *inicio_linha_atual != NULO ENTÃO
         tamanho_restante = TAMANHO_STRING(inicio_linha_atual)
