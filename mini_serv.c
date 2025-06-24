@@ -21,7 +21,7 @@ typedef struct s_client {
 } t_client;
 
 // --- Variáveis Globais ---
-t_client *g_clients[MAX_SUPPORTED_FDS]; 
+t_client *g_clients[1024]; 
 char g_msg_buffer[42000];
 
 int g_server_fd = -1;
