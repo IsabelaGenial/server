@@ -1,285 +1,171 @@
-
 #include <unistd.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h> // Para sprintf
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <sys/select.h>
-#include <stdio.h> // Apenas para sprintf
-
-// Substituição para FD_SETSIZE
-const int MAX_SUPPORTED_FDS = 1024; 
-// Substituição para SOMAXCONN
-const int LISTEN_BACKLOG = 128;
-
-// --- Estruturas ---
-typedef struct s_client {
-    int id;
-    char *write_buf;
-    char read_buf[40961]; // 40KB + null
-    int read_len;
-} t_client;
+#include <netinet/in.h>
 
 // --- Variáveis Globais ---
-t_client *g_clients[1024]; 
-char g_msg_buffer[42000];
-
-int g_server_fd = -1;
-int g_next_client_id = 0;
-fd_set g_active_fds, g_read_fds, g_write_fds;
-int g_max_fd = 0;
+int             clients_id[65536];
+char*           clients_msg[65536];
+int             server_fd, max_fd, next_id = 0;
+fd_set          active_fds, read_fds;
+char            send_buffer[1024 * 42]; // Tamanho generoso
+char            recv_buffer[1024 * 42];
 
 // --- Funções Auxiliares ---
-void ft_putstr_fd(const char *str, int fd) {
-    if (str) {
-        write(fd, str, strlen(str));
-    }
-}
-
-char *ft_strdup(const char *s) {
-    if (!s) return NULL;
-    size_t len = strlen(s);
-    char *new_s = (char *)malloc(len + 1);
-    if (!new_s) return NULL;
-    strcpy(new_s, s);
-    return new_s;
-}
 
 void fatal_error() {
-    ft_putstr_fd("Fatal error\n", 2);
-    if (g_server_fd != -1) {
-        close(g_server_fd);
-    }
-    for (int i = 0; i <= g_max_fd; ++i) {
-        if (g_clients[i]) {
-            if (g_clients[i]->write_buf) {
-                free(g_clients[i]->write_buf);
-            }
-            free(g_clients[i]);
-            g_clients[i] = NULL;
-            close(i);
-        }
-    }
+    write(2, "Fatal error\n", 12);
+    close(server_fd); // Boa prática fechar o socket principal antes de sair
     exit(1);
 }
 
-void broadcast_message(int sender_fd, const char *message) {
-    for (int fd = 0; fd <= g_max_fd; ++fd) {
-        if (FD_ISSET(fd, &g_active_fds) && g_clients[fd] && fd != sender_fd && fd != g_server_fd) { // Cliente existe, não é remetente, não é server
-            if (!g_clients[fd]->write_buf) {
-                g_clients[fd]->write_buf = ft_strdup(message);
-                if (!g_clients[fd]->write_buf) fatal_error();
-            } else {
-                char *old_buf = g_clients[fd]->write_buf;
-                char *new_buf = (char *)malloc(strlen(old_buf) + strlen(message) + 1);
-                if (!new_buf) fatal_error();
-                strcpy(new_buf, old_buf);
-                strcat(new_buf, message);
-                free(old_buf);
-                g_clients[fd]->write_buf = new_buf;
+void send_to_all(int sender_fd) {
+    for (int fd = 0; fd <= max_fd; fd++) {
+        // Envia apenas para clientes ativos, que não sejam o remetente nem o servidor
+        if (FD_ISSET(fd, &active_fds) && fd != sender_fd && fd != server_fd) {
+            if (send(fd, send_buffer, strlen(send_buffer), 0) < 0) {
+                // Em caso de erro, podemos ignorar para este exercício
             }
         }
     }
 }
 
-void remove_client(int fd_to_remove) {
-    // A verificação `g_clients[fd_to_remove]` já garante que é um FD de cliente válido
-    if (fd_to_remove < 0 || fd_to_remove >= MAX_SUPPORTED_FDS || !g_clients[fd_to_remove]) return;
+void accept_new_client() {
+    struct sockaddr_in  client_addr;
+    socklen_t           len = sizeof(client_addr);
+    int                 client_fd;
 
-    sprintf(g_msg_buffer, "server: client %d just left\n", g_clients[fd_to_remove]->id);
-    broadcast_message(fd_to_remove, g_msg_buffer);
+    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &len);
+    if (client_fd < 0)
+        return;
 
-    if (g_clients[fd_to_remove]->write_buf) {
-        free(g_clients[fd_to_remove]->write_buf);
-    }
-    free(g_clients[fd_to_remove]);
-    g_clients[fd_to_remove] = NULL;
+    // Atualiza o descritor de arquivo máximo, se necessário
+    if (client_fd > max_fd)
+        max_fd = client_fd;
 
-    close(fd_to_remove);
-    FD_CLR(fd_to_remove, &g_active_fds);
+    clients_id[client_fd] = next_id++;
+    clients_msg[client_fd] = NULL; // Importante inicializar como NULL
 
-    if (fd_to_remove == g_max_fd) {
-        g_max_fd = g_server_fd; 
-        for (int i = 0; i < fd_to_remove; ++i) { 
-            if (FD_ISSET(i, &g_active_fds) && i > g_max_fd) {
-                g_max_fd = i;
-            }
+    FD_SET(client_fd, &active_fds);
+
+    sprintf(send_buffer, "server: client %d just arrived\n", clients_id[client_fd]);
+    send_to_all(client_fd);
+}
+
+void process_client_data(int fd) {
+    int bytes_read = recv(fd, recv_buffer, sizeof(recv_buffer) - 1, 0);
+
+    // Cliente desconectou
+    if (bytes_read <= 0) {
+        sprintf(send_buffer, "server: client %d just left\n", clients_id[fd]);
+        send_to_all(fd);
+
+        // Libera recursos do cliente
+        if (clients_msg[fd]) {
+            free(clients_msg[fd]);
+            clients_msg[fd] = NULL;
         }
-    }
-}
-
-void add_new_client() {
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
-    int client_fd;
-
-    client_fd = accept(g_server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (client_fd < 0) return;
-
-    if (client_fd >= MAX_SUPPORTED_FDS) { 
-        close(client_fd);
+        close(fd);
+        FD_CLR(fd, &active_fds);
         return;
     }
 
-    g_clients[client_fd] = (t_client *)calloc(1, sizeof(t_client));
-    if (!g_clients[client_fd]) {
-        close(client_fd); 
-        fatal_error();
-    }
+    recv_buffer[bytes_read] = '\0';
 
-    g_clients[client_fd]->id = g_next_client_id++;
-    g_clients[client_fd]->write_buf = NULL;
-    g_clients[client_fd]->read_len = 0;
-    
-
-    FD_SET(client_fd, &g_active_fds);
-    if (client_fd > g_max_fd) {
-        g_max_fd = client_fd;
-    }
-
-    sprintf(g_msg_buffer, "server: client %d just arrived\n", g_clients[client_fd]->id);
-    broadcast_message(client_fd, g_msg_buffer); // client_fd é o "sender" para não receber a própria msg
-}
-
-void handle_client_read(int fd) {
-    t_client *client = g_clients[fd]; // Assumimos que client existe se chegamos aqui
-    int bytes_received;
-
-    int space_in_buf = sizeof(client->read_buf) - 1 - client->read_len;
-    if (space_in_buf <= 0) { 
-        return;
-    }
-
-    bytes_received = recv(fd, client->read_buf + client->read_len, space_in_buf, 0);
-
-    if (bytes_received <= 0) {
-        remove_client(fd);
-        return;
-    }
-
-    client->read_len += bytes_received;
-    client->read_buf[client->read_len] = '\0';
-
-    char *current_line_start = client->read_buf;
-    char *newline_char;
- 
-    while ((newline_char = strstr(current_line_start, "\n")) != NULL) {
-        *newline_char = '\0';
-
-        sprintf(g_msg_buffer, "client %d: %s\n", client->id, current_line_start);
-        broadcast_message(fd, g_msg_buffer);
-
-        current_line_start = newline_char + 1;
-    }
-
-   
-    int processed_len = current_line_start - client->read_buf;
-    int remaining_len = client->read_len - processed_len;
-
-    if (remaining_len > 0) {
-        memmove(client->read_buf, current_line_start, remaining_len);
-        client->read_len = remaining_len;
-        client->read_buf[client->read_len] = '\0';
-    } else { 
-        client->read_len = 0;
-        client->read_buf[0] = '\0';
-    }
-}
-
-void handle_client_write(int fd) {
-    t_client *client = g_clients[fd]; 
-
-    if (!client->write_buf || client->write_buf[0] == '\0') {
-        return;
-    }
-
-    int to_send_len = strlen(client->write_buf);
-    int bytes_sent = send(fd, client->write_buf, to_send_len, 0);
-
-    if (bytes_sent < 0) { 
-        remove_client(fd);
-        return;
-    }
-    if (bytes_sent == 0 && to_send_len > 0) { 
-        remove_client(fd);
-        return;
-    }
-
-    if (bytes_sent < to_send_len) {
-        memmove(client->write_buf, client->write_buf + bytes_sent, to_send_len - bytes_sent + 1); 
+    // Anexa os dados recebidos ao buffer do cliente usando realloc
+    if (clients_msg[fd] == NULL) {
+        // Primeira vez que recebemos dados, usamos malloc (ou strdup se permitido)
+        clients_msg[fd] = malloc(strlen(recv_buffer) + 1);
+        if (clients_msg[fd] == NULL) fatal_error();
+        strcpy(clients_msg[fd], recv_buffer);
     } else {
-        free(client->write_buf);
-        client->write_buf = NULL;
+        // Anexa novos dados usando realloc, que é mais eficiente
+        char *temp_ptr = realloc(clients_msg[fd], strlen(clients_msg[fd]) + strlen(recv_buffer) + 1);
+        if (temp_ptr == NULL) fatal_error();
+        clients_msg[fd] = temp_ptr;
+        strcat(clients_msg[fd], recv_buffer);
+    }
+
+    // Processa todas as mensagens completas (terminadas em '\n') no buffer
+    char *line_start = clients_msg[fd];
+    char *newline_pos;
+    while ((newline_pos = strstr(line_start, "\n"))) {
+        *newline_pos = '\0'; // Separa a linha
+
+        sprintf(send_buffer, "client %d: %s\n", clients_id[fd], line_start);
+        send_to_all(fd);
+
+        line_start = newline_pos + 1; // Aponta para o início da próxima linha (ou do resto)
+    }
+
+    // Guarda a parte restante (mensagem incompleta)
+    if (*line_start) {
+        // Há uma mensagem incompleta. Usamos a abordagem segura de malloc/strcpy/free
+        // pois memmove não é permitido e strcpy com sobreposição é UB.
+        char *remaining_msg = malloc(strlen(line_start) + 1);
+        if (remaining_msg == NULL) fatal_error();
+        strcpy(remaining_msg, line_start);
+        free(clients_msg[fd]);
+        clients_msg[fd] = remaining_msg;
+    } else {
+        // Nenhuma parte incompleta, tudo foi enviado. Libera o buffer.
+        free(clients_msg[fd]);
+        clients_msg[fd] = NULL;
     }
 }
 
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        ft_putstr_fd("Wrong number of arguments\n", 2);
+// --- Função Principal ---
+
+int main(int argc, char *argv[]) {
+    if (argc != 2 ) {
+        write(2, "Wrong number of arguments\n", 26);
         exit(1);
     }
 
-    int port = atoi(argv[1]);
-
-    for (int i = 0; i < MAX_SUPPORTED_FDS; ++i) { 
-        g_clients[i] = NULL;
-    }
-
-    g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_server_fd < 0) fatal_error();
-
-    
-    if (g_server_fd >= MAX_SUPPORTED_FDS) {
-        close(g_server_fd);
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0)
         fatal_error();
-    }
 
+    // Inicialização dos conjuntos de descritores e arrays
+    FD_ZERO(&active_fds);
+    memset(clients_id, 0, sizeof(clients_id)); // memset é preferível a bzero
+    memset(clients_msg, 0, sizeof(clients_msg));
 
-    g_max_fd = g_server_fd;
+    FD_SET(server_fd, &active_fds);
+    max_fd = server_fd;
 
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
-    servaddr.sin_port = htons(port);
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = htonl(2130706433); // 127.0.0.1
+    serv_addr.sin_port = htons(atoi(argv[1]));
 
-    if (bind(g_server_fd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) fatal_error();
-    if (listen(g_server_fd, LISTEN_BACKLOG) < 0) fatal_error(); 
+    if (bind(server_fd, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        fatal_error();
 
-    FD_ZERO(&g_active_fds);
-    FD_SET(g_server_fd, &g_active_fds);
+    if (listen(server_fd, 128) < 0)
+        fatal_error();
 
     while (1) {
-        g_read_fds = g_active_fds;
-        FD_ZERO(&g_write_fds);
+        read_fds = active_fds;
 
-        for (int fd = 0; fd <= g_max_fd; ++fd) {
-            if (FD_ISSET(fd, &g_active_fds) && g_clients[fd] && g_clients[fd]->write_buf && g_clients[fd]->write_buf[0] != '\0') {
-                FD_SET(fd, &g_write_fds);
-            }
-        }
+        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) < 0)
+            continue; // Em caso de erro no select, apenas continuamos o loop
 
-        if (select(g_max_fd + 1, &g_read_fds, &g_write_fds, NULL, NULL) < 0) {
-            fatal_error(); 
-        }
-
-        for (int current_fd = 0; current_fd <= g_max_fd; ++current_fd) {
-            if (FD_ISSET(current_fd, &g_read_fds)) {
-                if (current_fd == g_server_fd) {
-                    add_new_client();
+        for (int fd = 0; fd <= max_fd; fd++) {
+            if (FD_ISSET(fd, &read_fds)) {
+                if (fd == server_fd) {
+                    accept_new_client();
+                    break; // Uma nova conexão pode alterar max_fd, então é bom reavaliar
                 } else {
-                    if (g_clients[current_fd]) { 
-                        handle_client_read(current_fd);
-                    }
+                    process_client_data(fd);
                 }
-            }
-             
-            if (FD_ISSET(current_fd, &g_write_fds) && g_clients[current_fd]) {
-                handle_client_write(current_fd);
             }
         }
     }
-    close(g_server_fd); 
-    return 0; // Inalcançável
+    return 0; // Inalcançável, mas bom para a completude
 }
